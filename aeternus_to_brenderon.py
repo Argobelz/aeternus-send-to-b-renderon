@@ -1,68 +1,53 @@
 bl_info = {
     "name": "Send to B-Renderon",
     "author": "Aeternus + Grok",
-    "version": (1, 0, 0),
+    "version": (1, 2, 1),
     "blender": (5, 0, 0),
     "location": "Properties > Output > Send to B-Renderon",
-    "description": "Sends render jobs to B-Renderon queue manager",
+    "description": "Send jobs to B-Renderon (marker + view layer support)",
     "category": "Render",
 }
 
 import bpy
 import json
 import os
-import re
-import subprocess
 from pathlib import Path
 
-# ========================= CONFIG =========================
-B_RENDERON_PATH = r"D:\B-Renderon\B-renderon.exe"
 QUEUE_NAME = "Default"
-# =======================================================
 
 def get_blend_prefix(blend_path):
     stem = os.path.splitext(os.path.basename(blend_path))[0].upper()
-    for pfx in ("PNT", "TXT", "VID"):
-        if stem.startswith(pfx):
-            return pfx
+    for p in ("PNT", "TXT", "VID"):
+        if stem.startswith(p):
+            return p
     return None
 
 def detect_phase(blend_path):
     lower = blend_path.lower()
     for p in ("phase 3", "phase 2", "phase 1"):
         if p in lower:
-            return p.replace(" ", " ")
+            return p.title()
     return "Phase 1"
 
-def parse_shot(name):
-    m = re.match(r"(EPS(\d+))_(SQ\d+)_(SH[0-9A-Z]+)", name.strip(), re.IGNORECASE)
-    if not m:
-        return None
-    eps_num = m.group(2)
-    return {
-        "eps_folder": f"EPS{eps_num.zfill(3)}",
-        "sq": m.group(3).upper(),
-        "sh": m.group(4).upper(),
-    }
-
-def launch_b_renderon():
-    if os.path.exists(B_RENDERON_PATH):
-        try:
-            subprocess.Popen([B_RENDERON_PATH])
-            print("B-Renderon launched.")
-        except Exception as e:
-            print(f"Failed to launch B-Renderon: {e}")
+def get_camera_ranges(scene):
+    markers = [m for m in scene.timeline_markers if m.camera]
+    markers.sort(key=lambda m: m.frame)
+    ranges = []
+    for i, m in enumerate(markers):
+        start = m.frame
+        end = markers[i+1].frame - 1 if i + 1 < len(markers) else scene.frame_end
+        ranges.append({"camera": m.camera.name, "start": start, "end": end})
+    return ranges
 
 class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
     bl_idname = "send_to_brenderon.send"
     bl_label = "Send Jobs to B-Renderon"
-    bl_description = "Send current scene jobs to B-Renderon"
+    bl_description = "Send current jobs"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
         scene = context.scene
         blend_path = bpy.data.filepath
-
         if not blend_path:
             self.report({'ERROR'}, "Please save the .blend file first!")
             return {'CANCELLED'}
@@ -72,61 +57,60 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
             self.report({'ERROR'}, "Filename must start with PNT, TXT or VID")
             return {'CANCELLED'}
 
-        phase = detect_phase(blend_path)
         jobs = []
-
         view_layers = [vl.name for vl in scene.view_layers if vl.use]
 
-        if prefix in ("PNT", "TXT"):
-            # Simple version: one job per view layer using scene range
+        ranges = get_camera_ranges(scene) if prefix in ("PNT", "TXT") else []
+
+        if ranges:
+            for r in ranges:
+                for vl_name in view_layers:
+                    jobs.append({
+                        "ruta_blend": blend_path,
+                        "nombre_blend": os.path.basename(blend_path),
+                        "escena": scene.name,
+                        "view_layer": vl_name,
+                        "camara": r["camera"],
+                        "inicio": str(r["start"]),
+                        "fin": str(r["end"]),
+                        "modo": "Animation",
+                        "estado": "no_comenzado",
+                    })
+        else:
             for vl_name in view_layers:
-                job = {
-                    "blend_path": blend_path,
-                    "scene": scene.name,
+                jobs.append({
+                    "ruta_blend": blend_path,
+                    "nombre_blend": os.path.basename(blend_path),
+                    "escena": scene.name,
                     "view_layer": vl_name,
-                    "frame_start": scene.frame_start,
-                    "frame_end": scene.frame_end,
-                    "output_path": "",
-                    "mode": "Animation"
-                }
-                jobs.append(job)
-        else:  # VID
-            for vl_name in view_layers:
-                job = {
-                    "blend_path": blend_path,
-                    "scene": scene.name,
-                    "view_layer": vl_name,
-                    "frame_start": scene.frame_start,
-                    "frame_end": scene.frame_end,
-                    "output_path": "",
-                    "mode": "Animation"
-                }
-                jobs.append(job)
+                    "camara": scene.camera.name if scene.camera else "",
+                    "inicio": str(scene.frame_start),
+                    "fin": str(scene.frame_end),
+                    "modo": "Animation",
+                    "estado": "no_comenzado",
+                })
 
         if not jobs:
-            self.report({'ERROR'}, "No view layers enabled")
+            self.report({'ERROR'}, "No jobs generated")
             return {'CANCELLED'}
 
-        # Write to B-Renderon queue
-        queue_dir = Path(r"D:\B-Renderon\queues")
-        queue_dir.mkdir(parents=True, exist_ok=True)
-        queue_file = queue_dir / f"{QUEUE_NAME}.json"
+        # Write to queue as JSON Lines
+        queue_file = Path(r"D:\B-Renderon\queues") / f"{QUEUE_NAME}.json"
+        queue_file.parent.mkdir(parents=True, exist_ok=True)
 
         try:
+            lines = []
             if queue_file.exists():
                 with open(queue_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            else:
-                data = {"jobs": []}
+                    lines = f.readlines()
 
-            data["jobs"].extend(jobs)
+            for job in jobs:
+                lines.append(json.dumps(job, ensure_ascii=False) + "\n")
 
             with open(queue_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
+                f.writelines(lines)
 
-            launch_b_renderon()
-
-            self.report({'INFO'}, f"Sent {len(jobs)} job(s) to B-Renderon!")
+            self.report({'INFO'}, f"✅ Successfully sent {len(jobs)} job(s) to B-Renderon queue!")
             return {'FINISHED'}
 
         except Exception as e:
@@ -143,20 +127,18 @@ class SEND_TO_BRENDERON_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        scene = context.scene
         blend_path = bpy.data.filepath
 
         if not blend_path:
             layout.label(text="Save .blend file first", icon='ERROR')
             return
 
-        prefix = get_blend_prefix(blend_path)
-        layout.label(text=f"Type: {prefix or 'Unknown'}", icon='FILE_BLEND')
+        prefix = get_blend_prefix(blend_path) or "Unknown"
+        layout.label(text=f"Type: {prefix}", icon='FILE_BLEND')
         layout.label(text=f"Phase: {detect_phase(blend_path)}", icon='RENDERLAYERS')
 
         layout.separator()
-        row = layout.row()
-        row.operator("send_to_brenderon.send", icon='RENDER_ANIMATION', text="Send Jobs")
+        layout.operator("send_to_brenderon.send", icon='RENDER_ANIMATION', text="Send Jobs")
 
 
 def register():
