@@ -1,21 +1,21 @@
 bl_info = {
     "name": "Send to B-Renderon",
     "author": "Aeternus + Grok",
-    "version": (1, 4, 9),
+    "version": (1, 6, 0),
     "blender": (5, 0, 0),
     "location": "Properties > Output > Send to B-Renderon",
-    "description": "Camera-specific SH folders and filenames (B=base, C=base+1, P=base+2)",
+    "description": "EPS + SQ + SH from camera name (v1.6.0)",
     "category": "Render",
 }
 
 import bpy
 import json
-import os
 import re
 from pathlib import Path
 from datetime import datetime
 
 QUEUE_NAME = "Default"
+
 
 def get_blend_prefix(blend_path):
     stem = os.path.splitext(os.path.basename(blend_path))[0].upper()
@@ -23,6 +23,22 @@ def get_blend_prefix(blend_path):
         if stem.startswith(p):
             return p
     return None
+
+
+def extract_eps_sq_sh(camera_name):
+    """Extract EPS, SQ, SH from camera name like EPS046_SQ002_SH945"""
+    cam_str = str(camera_name).upper()
+    
+    eps_match = re.search(r'EPS(\d+)', cam_str)
+    sq_match = re.search(r'SQ(\d+)', cam_str)
+    sh_match = re.search(r'SH(\d+)', cam_str)
+    
+    eps = eps_match.group(1) if eps_match else "002"
+    sq = sq_match.group(1) if sq_match else "01"
+    sh = sh_match.group(1) if sh_match else "003"
+    
+    return eps, sq, sh
+
 
 def get_camera_ranges(scene):
     markers = [m for m in scene.timeline_markers if m.camera]
@@ -35,38 +51,40 @@ def get_camera_ranges(scene):
         ranges.append({"camera": camera_name, "start": start, "end": end})
     return ranges
 
+
 def build_output_info(blend_path, view_layer, camera):
     blend_file = Path(blend_path)
     blend_name = blend_file.stem.upper()
     
-    # Extract base SQ and SH from blend name
-    sq_match = re.search(r'SQ(\d+)', blend_name)
-    sh_base_match = re.search(r'SH(\d+)', blend_name)
+    # Extract from camera name
+    eps_num, sq, sh_str = extract_eps_sq_sh(camera)
     
-    sq = sq_match.group(1) if sq_match else "01"
-    sh_base = int(sh_base_match.group(1)) if sh_base_match else 3
+    vl_name = str(view_layer).strip()
+    cam_name_clean = str(camera).strip()
     
-    # Camera-specific SH offset
-    cam = str(camera).upper().strip() if camera else "B"
-    offset = {"B": 0, "C": 1, "P": 2}.get(cam, 0)
-    sh = sh_base + offset
-    sh_str = f"{sh:03d}"  # 003, 004, 005...
+    print(f"[DEBUG] Blend: {blend_name} | Camera: {cam_name_clean} | EPS: {eps_num} | SQ: {sq} | SH: {sh_str} | ViewLayer: {vl_name}")
+
+    base = r"J:\Aeternus\Render\Img Seq\Phase 1"
+    ruta_output = f"{base}\\EPS{eps_num}\\SQ{sq}\\SH{sh_str}"
     
-    base = r"J:\Aeternus\Render\Img Seq\Phase 1\EPS002"
-    ruta_output = f"{base}\\SQ{sq}\\SH{sh_str}"
-    
-    # Update SH in the filename too
+    # Clean blend name and update SH
     clean_name = re.sub(r'^(PNT|TXT|VID)_', '', blend_name)
-    clean_name = re.sub(r'SH\d+', f'SH{sh_str}', clean_name)
+    clean_name = re.sub(r'SH\d+', f'SH{sh_str}', clean_name, count=1)
     
-    nombre_output = f"{view_layer}_{clean_name}_" if view_layer else f"{clean_name}_"
-    
-    scene_output = f"{ruta_output}\\{nombre_output}"
+    nombre_output = f"{vl_name}_{clean_name}_" if vl_name else f"{clean_name}_"
     
     patron = {
         "aplicar_a": 2,
-        "ruta": ["J:\\Aeternus", "\\Render", "\\Img Seq", "\\Phase 1", "\\EPS002", f"\\SQ{sq}", f"\\SH{sh_str}"],
-        "nombre": ["[VIEWLAYER_NAME]", "[CAMERA_NAME]", "_"] if cam else ["[VIEWLAYER_NAME]", "_"],
+        "ruta": [
+            "J:\\Aeternus",
+            "\\Render",
+            "\\Img Seq",
+            "\\Phase 1",
+            f"\\EPS{eps_num}",
+            f"\\SQ{sq}",
+            f"\\SH{sh_str}"
+        ],
+        "nombre": ["[VIEWLAYER_NAME]", vl_name, "_"],
         "ruta_nodos": ruta_output,
         "nombre_nodos": nombre_output.rstrip('_'),
         "separador": "_"
@@ -75,7 +93,7 @@ def build_output_info(blend_path, view_layer, camera):
     return {
         "ruta_output": ruta_output,
         "nombre_output": nombre_output,
-        "scene_output": scene_output,
+        "scene_output": f"{ruta_output}\\{nombre_output}",
         "ruta_frame_output": f"{ruta_output}\\{nombre_output}0001.tif",
         "patron_nombrado": patron,
         "nombrado": f"{ruta_output}\\{nombre_output}"
@@ -85,7 +103,7 @@ def build_output_info(blend_path, view_layer, camera):
 class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
     bl_idname = "send_to_brenderon.send"
     bl_label = "Send Jobs to B-Renderon"
-    bl_description = "Send with camera-specific SH (v1.4.9)"
+    bl_description = "EPS + SQ + SH from camera name (v1.6.0)"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -103,7 +121,7 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
         view_layers = [vl.name for vl in scene.view_layers if vl.use]
         ranges = get_camera_ranges(scene) if prefix in ("PNT", "TXT") else []
 
-        self.report({'INFO'}, f"Blend: {blend_file.name} | View Layers: {len(view_layers)} | Camera Ranges: {len(ranges)}")
+        self.report({'INFO'}, f"Processing {blend_file.name} — {len(ranges)} camera ranges | {len(view_layers)} view layers")
 
         for vl_name in view_layers:
             if ranges:
@@ -130,7 +148,7 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
             with open(queue_file, 'w', encoding='utf-8') as f:
                 f.writelines(lines)
 
-            self.report({'INFO'}, f"✅ Sent {len(jobs)} jobs. Close & reopen B-Renderon.")
+            self.report({'INFO'}, f"✅ Sent {len(jobs)} jobs. Check console for DEBUG info.")
             return {'FINISHED'}
 
         except Exception as e:
@@ -190,9 +208,11 @@ def register():
     bpy.utils.register_class(SEND_TO_BRENDERON_OT_send)
     bpy.utils.register_class(SEND_TO_BRENDERON_PT_panel)
 
+
 def unregister():
     bpy.utils.unregister_class(SEND_TO_BRENDERON_OT_send)
     bpy.utils.unregister_class(SEND_TO_BRENDERON_PT_panel)
+
 
 if __name__ == "__main__":
     register()
