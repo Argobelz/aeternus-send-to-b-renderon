@@ -1,16 +1,18 @@
 bl_info = {
     "name": "Send to B-Renderon",
-    "author": "Aeternus + Grok",
-    "version": (1, 6, 0),
+    "author": "Aeternus",
+    "version": (1, 6, 1),
     "blender": (5, 0, 0),
     "location": "Properties > Output > Send to B-Renderon",
-    "description": "EPS + SQ + SH from camera name (v1.6.0)",
+    "description": "EPS + SQ + SH from camera name; atomic queue write for live reload (v1.6.1)",
     "category": "Render",
 }
 
 import bpy
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from datetime import datetime
 
@@ -145,8 +147,19 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
             for job in jobs:
                 lines.append(json.dumps(job, ensure_ascii=False) + "\n")
 
-            with open(queue_file, 'w', encoding='utf-8') as f:
-                f.writelines(lines)
+            # Atomic write: write to a temp file in the same folder, then replace.
+            # This triggers QFileSystemWatcher's fileChanged signal so B-Renderon
+            # picks up new jobs immediately without needing to be restarted.
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=queue_file.parent, suffix=".tmp"
+            )
+            try:
+                with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
+                    f.writelines(lines)
+                os.replace(tmp_path, queue_file)  # atomic on same filesystem
+            except Exception:
+                os.unlink(tmp_path)  # clean up temp file on failure
+                raise
 
             self.report({'INFO'}, f"✅ Sent {len(jobs)} jobs. Check console for DEBUG info.")
             return {'FINISHED'}
