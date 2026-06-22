@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Send to B-Renderon",
     "author": "Aeternus",
-    "version": (1, 7, 0),
+    "version": (1, 7, 1),
     "blender": (5, 0, 0),
     "location": "Properties > Output > Send to B-Renderon",
-    "description": "EPS + SQ + SH from camera name; VID per-view-layer camera; atomic queue write (v1.7.0)",
+    "description": "EPS + SQ + SH from per-view-layer camera override; atomic queue write (v1.7.1)",
     "category": "Render",
 }
 
@@ -28,23 +28,30 @@ def get_blend_prefix(blend_path):
 
 
 def extract_eps_sq_sh(camera_name):
-    """Extract EPS, SQ, SH from camera name like EPS02_SQ05_SH012.
-    EPS is zero-padded to 3 digits; SQ and SH preserve original digits."""
+    """Extract EPS, SQ, SH from camera name like EPS002_SQ05_SH012.
+    EPS is always zero-padded to 3 digits. SQ and SH preserve original digits."""
     cam_str = str(camera_name).upper()
 
     eps_match = re.search(r'EPS(\d+)', cam_str)
     sq_match  = re.search(r'SQ(\d+)',  cam_str)
     sh_match  = re.search(r'SH(\d+)',  cam_str)
 
-    # EPS: always 3-digit zero-padded (e.g. "02" -> "002")
     eps_raw = eps_match.group(1) if eps_match else "002"
     eps = eps_raw.zfill(3)
 
-    # SQ and SH: keep original digit string as-is (preserve leading zeros)
-    sq  = sq_match.group(1)  if sq_match  else "01"
-    sh  = sh_match.group(1)  if sh_match  else "003"
+    sq = sq_match.group(1) if sq_match else "01"
+    sh = sh_match.group(1) if sh_match else "003"
 
     return eps, sq, sh
+
+
+def get_vl_camera(vl, scene):
+    """Return the camera name for a view layer.
+    Uses the view layer camera override if set, otherwise falls back to scene camera."""
+    cam_obj = getattr(vl, "camera", None)
+    if cam_obj is None:
+        cam_obj = scene.camera
+    return cam_obj.name.strip() if cam_obj else ""
 
 
 def get_camera_ranges(scene):
@@ -68,15 +75,14 @@ def build_output_info(blend_path, view_layer, camera):
     vl_name = str(view_layer).strip()
     cam_name_clean = str(camera).strip()
 
-    print(f"[DEBUG] Blend: {blend_name} | Camera: {cam_name_clean} | EPS: {eps_num} | SQ: {sq} | SH: {sh_str} | ViewLayer: {vl_name}")
+    print(f"[DEBUG] Blend: {blend_name} | VL: {vl_name} | Camera: {cam_name_clean} | EPS: {eps_num} | SQ: {sq} | SH: {sh_str}")
 
     base = r"J:\Aeternus\Render\Img Seq\Phase 1"
     ruta_output = f"{base}\\EPS{eps_num}\\SQ{sq}\\SH{sh_str}"
 
-    clean_name = re.sub(r'^(PNT|TXT|VID)_', '', blend_name)
-    clean_name = re.sub(r'SH\d+', f'SH{sh_str}', clean_name, count=1)
-
-    nombre_output = f"{vl_name}_{clean_name}_" if vl_name else f"{clean_name}_"
+    # Build file prefix from camera name (drop the VID_/PNT_/TXT_ blend-name prefix)
+    # Use the camera name directly as the output naming base so path and filename match
+    nombre_output = f"{cam_name_clean}_"
 
     patron = {
         "aplicar_a": 2,
@@ -89,9 +95,9 @@ def build_output_info(blend_path, view_layer, camera):
             f"\\SQ{sq}",
             f"\\SH{sh_str}"
         ],
-        "nombre": ["[VIEWLAYER_NAME]", vl_name, "_"],
+        "nombre": ["[CAMERA_NAME]", cam_name_clean, "_"],
         "ruta_nodos": ruta_output,
-        "nombre_nodos": nombre_output.rstrip('_'),
+        "nombre_nodos": cam_name_clean,
         "separador": "_"
     }
 
@@ -108,7 +114,7 @@ def build_output_info(blend_path, view_layer, camera):
 class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
     bl_idname = "send_to_brenderon.send"
     bl_label = "Send Jobs to B-Renderon"
-    bl_description = "EPS + SQ + SH from camera name (v1.7.0)"
+    bl_description = "Per-view-layer camera override; EPS/SQ/SH from camera name (v1.7.1)"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -128,14 +134,13 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
         self.report({'INFO'}, f"Processing {blend_file.name} — prefix: {prefix} | {len(view_layers)} view layers")
 
         if prefix == "VID":
-            # VID: one job per view layer; camera name is derived from the view layer name itself
+            # VID: one job per view layer, camera read from view layer override
             for vl in view_layers:
-                vl_name = vl.name
-                # Use view layer name as the camera source so SH is extracted correctly per shot
-                info = build_output_info(blend_path, vl_name, vl_name)
+                camera = get_vl_camera(vl, scene)
+                info = build_output_info(blend_path, vl.name, camera)
                 jobs.append(self.create_job(
                     blend_folder, blend_file.name, scene,
-                    vl_name, vl_name,
+                    vl.name, camera,
                     scene.frame_start, scene.frame_end,
                     info
                 ))
