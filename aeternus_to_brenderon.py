@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Send to B-Renderon",
     "author": "Aeternus",
-    "version": (1, 6, 1),
+    "version": (1, 7, 0),
     "blender": (5, 0, 0),
     "location": "Properties > Output > Send to B-Renderon",
-    "description": "EPS + SQ + SH from camera name; atomic queue write for live reload (v1.6.1)",
+    "description": "EPS + SQ + SH from camera name; VID per-view-layer camera; atomic queue write (v1.7.0)",
     "category": "Render",
 }
 
@@ -28,17 +28,22 @@ def get_blend_prefix(blend_path):
 
 
 def extract_eps_sq_sh(camera_name):
-    """Extract EPS, SQ, SH from camera name like EPS046_SQ002_SH945"""
+    """Extract EPS, SQ, SH from camera name like EPS02_SQ05_SH012.
+    EPS is zero-padded to 3 digits; SQ and SH preserve original digits."""
     cam_str = str(camera_name).upper()
-    
+
     eps_match = re.search(r'EPS(\d+)', cam_str)
-    sq_match = re.search(r'SQ(\d+)', cam_str)
-    sh_match = re.search(r'SH(\d+)', cam_str)
-    
-    eps = eps_match.group(1) if eps_match else "002"
-    sq = sq_match.group(1) if sq_match else "01"
-    sh = sh_match.group(1) if sh_match else "003"
-    
+    sq_match  = re.search(r'SQ(\d+)',  cam_str)
+    sh_match  = re.search(r'SH(\d+)',  cam_str)
+
+    # EPS: always 3-digit zero-padded (e.g. "02" -> "002")
+    eps_raw = eps_match.group(1) if eps_match else "002"
+    eps = eps_raw.zfill(3)
+
+    # SQ and SH: keep original digit string as-is (preserve leading zeros)
+    sq  = sq_match.group(1)  if sq_match  else "01"
+    sh  = sh_match.group(1)  if sh_match  else "003"
+
     return eps, sq, sh
 
 
@@ -57,24 +62,22 @@ def get_camera_ranges(scene):
 def build_output_info(blend_path, view_layer, camera):
     blend_file = Path(blend_path)
     blend_name = blend_file.stem.upper()
-    
-    # Extract from camera name
+
     eps_num, sq, sh_str = extract_eps_sq_sh(camera)
-    
+
     vl_name = str(view_layer).strip()
     cam_name_clean = str(camera).strip()
-    
+
     print(f"[DEBUG] Blend: {blend_name} | Camera: {cam_name_clean} | EPS: {eps_num} | SQ: {sq} | SH: {sh_str} | ViewLayer: {vl_name}")
 
     base = r"J:\Aeternus\Render\Img Seq\Phase 1"
     ruta_output = f"{base}\\EPS{eps_num}\\SQ{sq}\\SH{sh_str}"
-    
-    # Clean blend name and update SH
+
     clean_name = re.sub(r'^(PNT|TXT|VID)_', '', blend_name)
     clean_name = re.sub(r'SH\d+', f'SH{sh_str}', clean_name, count=1)
-    
+
     nombre_output = f"{vl_name}_{clean_name}_" if vl_name else f"{clean_name}_"
-    
+
     patron = {
         "aplicar_a": 2,
         "ruta": [
@@ -91,21 +94,21 @@ def build_output_info(blend_path, view_layer, camera):
         "nombre_nodos": nombre_output.rstrip('_'),
         "separador": "_"
     }
-    
+
     return {
         "ruta_output": ruta_output,
         "nombre_output": nombre_output,
         "scene_output": f"{ruta_output}\\{nombre_output}",
         "ruta_frame_output": f"{ruta_output}\\{nombre_output}0001.tif",
         "patron_nombrado": patron,
-        "nombrado": f"{ruta_output}\\{nombre_output}"
+        "nombrado": f"{ruta_output}\\{nombre_output}",
     }
 
 
 class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
     bl_idname = "send_to_brenderon.send"
     bl_label = "Send Jobs to B-Renderon"
-    bl_description = "EPS + SQ + SH from camera name (v1.6.0)"
+    bl_description = "EPS + SQ + SH from camera name (v1.7.0)"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -120,20 +123,48 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
 
         prefix = get_blend_prefix(blend_path)
         jobs = []
-        view_layers = [vl.name for vl in scene.view_layers if vl.use]
-        ranges = get_camera_ranges(scene) if prefix in ("PNT", "TXT") else []
+        view_layers = [vl for vl in scene.view_layers if vl.use]
 
-        self.report({'INFO'}, f"Processing {blend_file.name} — {len(ranges)} camera ranges | {len(view_layers)} view layers")
+        self.report({'INFO'}, f"Processing {blend_file.name} — prefix: {prefix} | {len(view_layers)} view layers")
 
-        for vl_name in view_layers:
-            if ranges:
+        if prefix == "VID":
+            # VID: one job per view layer; camera name is derived from the view layer name itself
+            for vl in view_layers:
+                vl_name = vl.name
+                # Use view layer name as the camera source so SH is extracted correctly per shot
+                info = build_output_info(blend_path, vl_name, vl_name)
+                jobs.append(self.create_job(
+                    blend_folder, blend_file.name, scene,
+                    vl_name, vl_name,
+                    scene.frame_start, scene.frame_end,
+                    info
+                ))
+
+        elif prefix in ("PNT", "TXT"):
+            # PNT / TXT: camera marker ranges, one job per view layer per range
+            ranges = get_camera_ranges(scene)
+            self.report({'INFO'}, f"{len(ranges)} camera ranges found")
+            for vl in view_layers:
                 for r in ranges:
-                    info = build_output_info(blend_path, vl_name, r["camera"])
-                    jobs.append(self.create_job(blend_folder, blend_file.name, scene, vl_name, r["camera"], r["start"], r["end"], info))
-            else:
-                cam = scene.camera.name if scene.camera else ""
-                info = build_output_info(blend_path, vl_name, cam)
-                jobs.append(self.create_job(blend_folder, blend_file.name, scene, vl_name, cam, scene.frame_start, scene.frame_end, info))
+                    info = build_output_info(blend_path, vl.name, r["camera"])
+                    jobs.append(self.create_job(
+                        blend_folder, blend_file.name, scene,
+                        vl.name, r["camera"],
+                        r["start"], r["end"],
+                        info
+                    ))
+
+        else:
+            # Unknown prefix: fall back to scene camera, one job per view layer
+            cam = scene.camera.name if scene.camera else ""
+            for vl in view_layers:
+                info = build_output_info(blend_path, vl.name, cam)
+                jobs.append(self.create_job(
+                    blend_folder, blend_file.name, scene,
+                    vl.name, cam,
+                    scene.frame_start, scene.frame_end,
+                    info
+                ))
 
         queue_file = Path(r"D:\B-Renderon\queues") / f"{QUEUE_NAME}.json"
         queue_file.parent.mkdir(parents=True, exist_ok=True)
@@ -147,18 +178,15 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
             for job in jobs:
                 lines.append(json.dumps(job, ensure_ascii=False) + "\n")
 
-            # Atomic write: write to a temp file in the same folder, then replace.
-            # This triggers QFileSystemWatcher's fileChanged signal so B-Renderon
-            # picks up new jobs immediately without needing to be restarted.
             tmp_fd, tmp_path = tempfile.mkstemp(
                 dir=queue_file.parent, suffix=".tmp"
             )
             try:
                 with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
                     f.writelines(lines)
-                os.replace(tmp_path, queue_file)  # atomic on same filesystem
+                os.replace(tmp_path, queue_file)
             except Exception:
-                os.unlink(tmp_path)  # clean up temp file on failure
+                os.unlink(tmp_path)
                 raise
 
             self.report({'INFO'}, f"✅ Sent {len(jobs)} jobs. Check console for DEBUG info.")
