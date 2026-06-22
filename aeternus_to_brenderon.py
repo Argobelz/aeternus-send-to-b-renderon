@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Send to B-Renderon",
     "author": "Aeternus",
-    "version": (1, 7, 2),
+    "version": (1, 8, 0),
     "blender": (5, 0, 0),
     "location": "Properties > Output > Send to B-Renderon",
-    "description": "Camera read from enabled collection per view layer (v1.7.2)",
+    "description": "Checkbox selection for VID view layers and PNT cameras (v1.8.0)",
     "category": "Render",
 }
 
@@ -18,6 +18,26 @@ from datetime import datetime
 
 QUEUE_NAME = "Default"
 
+# ---------------------------------------------------------------------------
+# Scene property groups
+# ---------------------------------------------------------------------------
+
+class VIDViewLayerItem(bpy.types.PropertyGroup):
+    name: bpy.props.StringProperty()
+    camera: bpy.props.StringProperty()
+    enabled: bpy.props.BoolProperty(default=True)
+
+
+class PNTCameraItem(bpy.types.PropertyGroup):
+    camera: bpy.props.StringProperty()
+    start: bpy.props.IntProperty()
+    end: bpy.props.IntProperty()
+    enabled: bpy.props.BoolProperty(default=True)
+
+
+# ---------------------------------------------------------------------------
+# Core helpers
+# ---------------------------------------------------------------------------
 
 def get_blend_prefix(blend_path):
     stem = os.path.splitext(os.path.basename(blend_path))[0].upper()
@@ -28,29 +48,20 @@ def get_blend_prefix(blend_path):
 
 
 def extract_eps_sq_sh(camera_name):
-    """Extract EPS, SQ, SH from camera name like EPS002_SQ05_SH012.
-    EPS is always zero-padded to 3 digits. SQ and SH preserve original digits."""
     cam_str = str(camera_name).upper()
-
     eps_match = re.search(r'EPS(\d+)', cam_str)
     sq_match  = re.search(r'SQ(\d+)',  cam_str)
     sh_match  = re.search(r'SH(\d+)',  cam_str)
-
-    eps_raw = eps_match.group(1) if eps_match else "002"
-    eps = eps_raw.zfill(3)
-    sq  = sq_match.group(1) if sq_match  else "01"
-    sh  = sh_match.group(1) if sh_match  else "003"
-
+    eps = (eps_match.group(1) if eps_match else "002").zfill(3)
+    sq  = sq_match.group(1)  if sq_match  else "01"
+    sh  = sh_match.group(1)  if sh_match  else "003"
     return eps, sq, sh
 
 
 def find_camera_in_layer_collection(layer_col):
-    """Recursively search a LayerCollection for a camera object in an excluded=False collection."""
-    # Check objects directly in this collection
     for obj in layer_col.collection.objects:
         if obj.type == 'CAMERA':
             return obj.name
-    # Recurse into children that are not excluded
     for child in layer_col.children:
         if not child.exclude:
             result = find_camera_in_layer_collection(child)
@@ -60,27 +71,14 @@ def find_camera_in_layer_collection(layer_col):
 
 
 def get_vl_camera(vl, scene):
-    """
-    For a view layer, find the camera by:
-    1. vl.camera override (if set)
-    2. Walk the view layer's layer_collection tree and find the first enabled
-       collection that contains a CAMERA object — read its name.
-    3. Fall back to scene.camera.
-    """
-    # 1. Explicit view layer camera override
     cam_obj = getattr(vl, "camera", None)
     if cam_obj:
         return cam_obj.name.strip()
-
-    # 2. Walk layer collections — only non-excluded ones
     camera_name = find_camera_in_layer_collection(vl.layer_collection)
     if camera_name:
         return camera_name
-
-    # 3. Scene camera fallback
     if scene.camera:
         return scene.camera.name.strip()
-
     return ""
 
 
@@ -91,17 +89,17 @@ def get_camera_ranges(scene):
     for i, m in enumerate(markers):
         start = m.frame
         end = markers[i+1].frame - 1 if i + 1 < len(markers) else scene.frame_end
-        camera_name = m.camera.name.strip() if m.camera else ""
-        ranges.append({"camera": camera_name, "start": start, "end": end})
+        ranges.append({
+            "camera": m.camera.name.strip() if m.camera else "",
+            "start": start,
+            "end": end,
+        })
     return ranges
 
 
 def build_output_info(blend_path, view_layer, camera):
-    blend_file = Path(blend_path)
-    blend_name = blend_file.stem.upper()
-
+    blend_name = Path(blend_path).stem.upper()
     eps_num, sq, sh_str = extract_eps_sq_sh(camera)
-
     vl_name = str(view_layer).strip()
     cam_name_clean = str(camera).strip()
 
@@ -109,24 +107,18 @@ def build_output_info(blend_path, view_layer, camera):
 
     base = r"J:\Aeternus\Render\Img Seq\Phase 1"
     ruta_output = f"{base}\\EPS{eps_num}\\SQ{sq}\\SH{sh_str}"
-
     nombre_output = f"{cam_name_clean}_"
 
     patron = {
         "aplicar_a": 2,
         "ruta": [
-            "J:\\Aeternus",
-            "\\Render",
-            "\\Img Seq",
-            "\\Phase 1",
-            f"\\EPS{eps_num}",
-            f"\\SQ{sq}",
-            f"\\SH{sh_str}"
+            "J:\\Aeternus", "\\Render", "\\Img Seq", "\\Phase 1",
+            f"\\EPS{eps_num}", f"\\SQ{sq}", f"\\SH{sh_str}"
         ],
         "nombre": ["[CAMERA_NAME]", cam_name_clean, "_"],
         "ruta_nodos": ruta_output,
         "nombre_nodos": cam_name_clean,
-        "separador": "_"
+        "separador": "_",
     }
 
     return {
@@ -139,10 +131,136 @@ def build_output_info(blend_path, view_layer, camera):
     }
 
 
+def write_jobs_to_queue(jobs):
+    queue_file = Path(r"D:\B-Renderon\queues") / f"{QUEUE_NAME}.json"
+    queue_file.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    if queue_file.exists():
+        with open(queue_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    for job in jobs:
+        lines.append(json.dumps(job, ensure_ascii=False) + "\n")
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=queue_file.parent, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+        os.replace(tmp_path, queue_file)
+    except Exception:
+        os.unlink(tmp_path)
+        raise
+
+
+def make_job(blend_folder, blend_name, scene, view_layer, camera, inicio, fin, info):
+    return {
+        "ruta_blend": blend_folder,
+        "nombre_blend": blend_name,
+        "tag_blender": "Default",
+        "modo": "Animation",
+        "escena": scene.name,
+        "view_layer": view_layer,
+        "camara": camera,
+        "inicio": str(inicio),
+        "fin": str(fin),
+        "step": "1",
+        "args_extra": "",
+        "nombres_dispositivos": "",
+        "frames": "",
+        "script": "",
+        "estado": "no_comenzado",
+        **info,
+        "propiedades_argumentar": ["view_layer", "camara", "inicio", "nombrado", "fin"],
+        "view_layers": [view_layer],
+        "manejar_compositing": "auto",
+        "camaras": [camera] if camera else [],
+        "desactivado": False,
+        "parallel_gpu": False,
+        "job_id": f"blender_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Operators — refresh lists
+# ---------------------------------------------------------------------------
+
+class SEND_TO_BRENDERON_OT_refresh_vid(bpy.types.Operator):
+    bl_idname = "send_to_brenderon.refresh_vid"
+    bl_label = "Refresh VID list"
+
+    def execute(self, context):
+        scene = context.scene
+        scene.btb_vid_layers.clear()
+        for vl in scene.view_layers:
+            if not vl.use:
+                continue
+            camera = get_vl_camera(vl, scene)
+            item = scene.btb_vid_layers.add()
+            item.name = vl.name
+            item.camera = camera
+            item.enabled = True
+        return {'FINISHED'}
+
+
+class SEND_TO_BRENDERON_OT_refresh_pnt(bpy.types.Operator):
+    bl_idname = "send_to_brenderon.refresh_pnt"
+    bl_label = "Refresh PNT list"
+
+    def execute(self, context):
+        scene = context.scene
+        scene.btb_pnt_cameras.clear()
+        for r in get_camera_ranges(scene):
+            item = scene.btb_pnt_cameras.add()
+            item.camera = r["camera"]
+            item.start = r["start"]
+            item.end = r["end"]
+            item.enabled = True
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
+# Operators — select all / none
+# ---------------------------------------------------------------------------
+
+class SEND_TO_BRENDERON_OT_vid_select_all(bpy.types.Operator):
+    bl_idname = "send_to_brenderon.vid_select_all"
+    bl_label = "All"
+    def execute(self, context):
+        for item in context.scene.btb_vid_layers:
+            item.enabled = True
+        return {'FINISHED'}
+
+class SEND_TO_BRENDERON_OT_vid_select_none(bpy.types.Operator):
+    bl_idname = "send_to_brenderon.vid_select_none"
+    bl_label = "None"
+    def execute(self, context):
+        for item in context.scene.btb_vid_layers:
+            item.enabled = False
+        return {'FINISHED'}
+
+class SEND_TO_BRENDERON_OT_pnt_select_all(bpy.types.Operator):
+    bl_idname = "send_to_brenderon.pnt_select_all"
+    bl_label = "All"
+    def execute(self, context):
+        for item in context.scene.btb_pnt_cameras:
+            item.enabled = True
+        return {'FINISHED'}
+
+class SEND_TO_BRENDERON_OT_pnt_select_none(bpy.types.Operator):
+    bl_idname = "send_to_brenderon.pnt_select_none"
+    bl_label = "None"
+    def execute(self, context):
+        for item in context.scene.btb_pnt_cameras:
+            item.enabled = False
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
+# Operator — send selected jobs
+# ---------------------------------------------------------------------------
+
 class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
     bl_idname = "send_to_brenderon.send"
-    bl_label = "Send Jobs to B-Renderon"
-    bl_description = "Camera from enabled collection per view layer (v1.7.2)"
+    bl_label = "Send Selected Jobs"
+    bl_description = "Send checked jobs to B-Renderon queue (v1.8.0)"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -154,110 +272,80 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
 
         blend_file = Path(blend_path)
         blend_folder = str(blend_file.parent)
-
         prefix = get_blend_prefix(blend_path)
         jobs = []
-        view_layers = [vl for vl in scene.view_layers if vl.use]
-
-        self.report({'INFO'}, f"Processing {blend_file.name} — prefix: {prefix} | {len(view_layers)} view layers")
 
         if prefix == "VID":
-            for vl in view_layers:
-                camera = get_vl_camera(vl, scene)
-                if not camera:
-                    self.report({'WARNING'}, f"No camera found for view layer '{vl.name}', skipping.")
+            if not scene.btb_vid_layers:
+                self.report({'ERROR'}, "Click Refresh first to load view layers.")
+                return {'CANCELLED'}
+            for item in scene.btb_vid_layers:
+                if not item.enabled:
                     continue
-                info = build_output_info(blend_path, vl.name, camera)
-                jobs.append(self.create_job(
+                if not item.camera:
+                    self.report({'WARNING'}, f"No camera for '{item.name}', skipping.")
+                    continue
+                info = build_output_info(blend_path, item.name, item.camera)
+                jobs.append(make_job(
                     blend_folder, blend_file.name, scene,
-                    vl.name, camera,
-                    scene.frame_start, scene.frame_end,
-                    info
+                    item.name, item.camera,
+                    scene.frame_start, scene.frame_end, info
                 ))
 
-        elif prefix in ("PNT", "TXT"):
+        elif prefix == "PNT":
+            if not scene.btb_pnt_cameras:
+                self.report({'ERROR'}, "Click Refresh first to load camera ranges.")
+                return {'CANCELLED'}
+            view_layers = [vl for vl in scene.view_layers if vl.use]
+            for item in scene.btb_pnt_cameras:
+                if not item.enabled:
+                    continue
+                for vl in view_layers:
+                    info = build_output_info(blend_path, vl.name, item.camera)
+                    jobs.append(make_job(
+                        blend_folder, blend_file.name, scene,
+                        vl.name, item.camera,
+                        item.start, item.end, info
+                    ))
+
+        elif prefix == "TXT":
             ranges = get_camera_ranges(scene)
-            self.report({'INFO'}, f"{len(ranges)} camera ranges found")
-            for vl in view_layers:
-                for r in ranges:
+            view_layers = [vl for vl in scene.view_layers if vl.use]
+            for r in ranges:
+                for vl in view_layers:
                     info = build_output_info(blend_path, vl.name, r["camera"])
-                    jobs.append(self.create_job(
+                    jobs.append(make_job(
                         blend_folder, blend_file.name, scene,
                         vl.name, r["camera"],
-                        r["start"], r["end"],
-                        info
+                        r["start"], r["end"], info
                     ))
 
         else:
             cam = scene.camera.name if scene.camera else ""
-            for vl in view_layers:
+            for vl in (vl for vl in scene.view_layers if vl.use):
                 info = build_output_info(blend_path, vl.name, cam)
-                jobs.append(self.create_job(
+                jobs.append(make_job(
                     blend_folder, blend_file.name, scene,
                     vl.name, cam,
-                    scene.frame_start, scene.frame_end,
-                    info
+                    scene.frame_start, scene.frame_end, info
                 ))
 
         if not jobs:
-            self.report({'ERROR'}, "No jobs created. Check console for DEBUG info.")
+            self.report({'ERROR'}, "No jobs selected. Check your checkboxes.")
             return {'CANCELLED'}
-
-        queue_file = Path(r"D:\B-Renderon\queues") / f"{QUEUE_NAME}.json"
-        queue_file.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            lines = []
-            if queue_file.exists():
-                with open(queue_file, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-
-            for job in jobs:
-                lines.append(json.dumps(job, ensure_ascii=False) + "\n")
-
-            tmp_fd, tmp_path = tempfile.mkstemp(dir=queue_file.parent, suffix=".tmp")
-            try:
-                with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
-                    f.writelines(lines)
-                os.replace(tmp_path, queue_file)
-            except Exception:
-                os.unlink(tmp_path)
-                raise
-
-            self.report({'INFO'}, f"✅ Sent {len(jobs)} jobs. Check console for DEBUG info.")
+            write_jobs_to_queue(jobs)
+            self.report({'INFO'}, f"✅ Sent {len(jobs)} jobs.")
             return {'FINISHED'}
-
         except Exception as e:
-            self.report({'ERROR'}, f"Error: {e}")
+            self.report({'ERROR'}, f"Queue write failed: {e}")
             return {'CANCELLED'}
 
-    def create_job(self, ruta_blend, nombre_blend, scene, view_layer, camera, inicio, fin, info):
-        return {
-            "ruta_blend": ruta_blend,
-            "nombre_blend": nombre_blend,
-            "tag_blender": "Default",
-            "modo": "Animation",
-            "escena": scene.name,
-            "view_layer": view_layer,
-            "camara": camera,
-            "inicio": str(inicio),
-            "fin": str(fin),
-            "step": "1",
-            "args_extra": "",
-            "nombres_dispositivos": "",
-            "frames": "",
-            "script": "",
-            "estado": "no_comenzado",
-            **info,
-            "propiedades_argumentar": ["view_layer", "camara", "inicio", "nombrado", "fin"],
-            "view_layers": [view_layer],
-            "manejar_compositing": "auto",
-            "camaras": [camera] if camera else [],
-            "desactivado": False,
-            "parallel_gpu": False,
-            "job_id": f"blender_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-        }
 
+# ---------------------------------------------------------------------------
+# Panel
+# ---------------------------------------------------------------------------
 
 class SEND_TO_BRENDERON_PT_panel(bpy.types.Panel):
     bl_label = "Send to B-Renderon"
@@ -268,26 +356,99 @@ class SEND_TO_BRENDERON_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        scene = context.scene
         blend_path = bpy.data.filepath
+
         if not blend_path:
             layout.label(text="Save .blend first", icon='ERROR')
             return
 
         blend_file = Path(blend_path)
-        layout.label(text=f"Folder: {blend_file.parent.name}", icon='FILE_FOLDER')
+        prefix = get_blend_prefix(blend_path)
+
         layout.label(text=f"File: {blend_file.name}", icon='FILE_BLEND')
+        layout.label(text=f"Prefix: {prefix or 'Unknown'}")
         layout.separator()
-        layout.operator("send_to_brenderon.send", icon='RENDER_ANIMATION', text="Send Jobs")
+
+        # ---- VID panel ----
+        if prefix == "VID":
+            row = layout.row()
+            row.label(text="View Layers")
+            row.operator("send_to_brenderon.refresh_vid", text="Refresh", icon='FILE_REFRESH')
+
+            if scene.btb_vid_layers:
+                # Select all / none row
+                row = layout.row(align=True)
+                row.operator("send_to_brenderon.vid_select_all", icon='CHECKBOX_HLT')
+                row.operator("send_to_brenderon.vid_select_none", icon='CHECKBOX_DEHLT')
+
+                box = layout.box()
+                for item in scene.btb_vid_layers:
+                    row = box.row()
+                    row.prop(item, "enabled", text="")
+                    row.label(text=item.name)
+                    row.label(text=item.camera if item.camera else "No camera", icon='CAMERA_DATA')
+            else:
+                layout.label(text="Click Refresh to load view layers", icon='INFO')
+
+        # ---- PNT panel ----
+        elif prefix == "PNT":
+            row = layout.row()
+            row.label(text="Camera Ranges")
+            row.operator("send_to_brenderon.refresh_pnt", text="Refresh", icon='FILE_REFRESH')
+
+            if scene.btb_pnt_cameras:
+                row = layout.row(align=True)
+                row.operator("send_to_brenderon.pnt_select_all", icon='CHECKBOX_HLT')
+                row.operator("send_to_brenderon.pnt_select_none", icon='CHECKBOX_DEHLT')
+
+                box = layout.box()
+                for item in scene.btb_pnt_cameras:
+                    row = box.row()
+                    row.prop(item, "enabled", text="")
+                    row.label(text=item.camera, icon='CAMERA_DATA')
+                    row.label(text=f"f{item.start}–{item.end}")
+            else:
+                layout.label(text="Click Refresh to load camera ranges", icon='INFO')
+
+        # ---- TXT / other — no selection UI needed ----
+        else:
+            layout.label(text="All camera ranges will be sent.", icon='INFO')
+
+        layout.separator()
+        layout.operator("send_to_brenderon.send", icon='RENDER_ANIMATION', text="Send Selected Jobs")
+
+
+# ---------------------------------------------------------------------------
+# Registration
+# ---------------------------------------------------------------------------
+
+classes = (
+    VIDViewLayerItem,
+    PNTCameraItem,
+    SEND_TO_BRENDERON_OT_refresh_vid,
+    SEND_TO_BRENDERON_OT_refresh_pnt,
+    SEND_TO_BRENDERON_OT_vid_select_all,
+    SEND_TO_BRENDERON_OT_vid_select_none,
+    SEND_TO_BRENDERON_OT_pnt_select_all,
+    SEND_TO_BRENDERON_OT_pnt_select_none,
+    SEND_TO_BRENDERON_OT_send,
+    SEND_TO_BRENDERON_PT_panel,
+)
 
 
 def register():
-    bpy.utils.register_class(SEND_TO_BRENDERON_OT_send)
-    bpy.utils.register_class(SEND_TO_BRENDERON_PT_panel)
+    for cls in classes:
+        bpy.utils.register_class(cls)
+    bpy.types.Scene.btb_vid_layers = bpy.props.CollectionProperty(type=VIDViewLayerItem)
+    bpy.types.Scene.btb_pnt_cameras = bpy.props.CollectionProperty(type=PNTCameraItem)
 
 
 def unregister():
-    bpy.utils.unregister_class(SEND_TO_BRENDERON_OT_send)
-    bpy.utils.unregister_class(SEND_TO_BRENDERON_PT_panel)
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
+    del bpy.types.Scene.btb_vid_layers
+    del bpy.types.Scene.btb_pnt_cameras
 
 
 if __name__ == "__main__":
