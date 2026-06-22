@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Send to B-Renderon",
     "author": "Aeternus",
-    "version": (1, 7, 1),
+    "version": (1, 7, 2),
     "blender": (5, 0, 0),
     "location": "Properties > Output > Send to B-Renderon",
-    "description": "EPS + SQ + SH from per-view-layer camera override; atomic queue write (v1.7.1)",
+    "description": "Camera read from enabled collection per view layer (v1.7.2)",
     "category": "Render",
 }
 
@@ -38,20 +38,50 @@ def extract_eps_sq_sh(camera_name):
 
     eps_raw = eps_match.group(1) if eps_match else "002"
     eps = eps_raw.zfill(3)
-
-    sq = sq_match.group(1) if sq_match else "01"
-    sh = sh_match.group(1) if sh_match else "003"
+    sq  = sq_match.group(1) if sq_match  else "01"
+    sh  = sh_match.group(1) if sh_match  else "003"
 
     return eps, sq, sh
 
 
+def find_camera_in_layer_collection(layer_col):
+    """Recursively search a LayerCollection for a camera object in an excluded=False collection."""
+    # Check objects directly in this collection
+    for obj in layer_col.collection.objects:
+        if obj.type == 'CAMERA':
+            return obj.name
+    # Recurse into children that are not excluded
+    for child in layer_col.children:
+        if not child.exclude:
+            result = find_camera_in_layer_collection(child)
+            if result:
+                return result
+    return None
+
+
 def get_vl_camera(vl, scene):
-    """Return the camera name for a view layer.
-    Uses the view layer camera override if set, otherwise falls back to scene camera."""
+    """
+    For a view layer, find the camera by:
+    1. vl.camera override (if set)
+    2. Walk the view layer's layer_collection tree and find the first enabled
+       collection that contains a CAMERA object — read its name.
+    3. Fall back to scene.camera.
+    """
+    # 1. Explicit view layer camera override
     cam_obj = getattr(vl, "camera", None)
-    if cam_obj is None:
-        cam_obj = scene.camera
-    return cam_obj.name.strip() if cam_obj else ""
+    if cam_obj:
+        return cam_obj.name.strip()
+
+    # 2. Walk layer collections — only non-excluded ones
+    camera_name = find_camera_in_layer_collection(vl.layer_collection)
+    if camera_name:
+        return camera_name
+
+    # 3. Scene camera fallback
+    if scene.camera:
+        return scene.camera.name.strip()
+
+    return ""
 
 
 def get_camera_ranges(scene):
@@ -80,8 +110,6 @@ def build_output_info(blend_path, view_layer, camera):
     base = r"J:\Aeternus\Render\Img Seq\Phase 1"
     ruta_output = f"{base}\\EPS{eps_num}\\SQ{sq}\\SH{sh_str}"
 
-    # Build file prefix from camera name (drop the VID_/PNT_/TXT_ blend-name prefix)
-    # Use the camera name directly as the output naming base so path and filename match
     nombre_output = f"{cam_name_clean}_"
 
     patron = {
@@ -114,7 +142,7 @@ def build_output_info(blend_path, view_layer, camera):
 class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
     bl_idname = "send_to_brenderon.send"
     bl_label = "Send Jobs to B-Renderon"
-    bl_description = "Per-view-layer camera override; EPS/SQ/SH from camera name (v1.7.1)"
+    bl_description = "Camera from enabled collection per view layer (v1.7.2)"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -134,9 +162,11 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
         self.report({'INFO'}, f"Processing {blend_file.name} — prefix: {prefix} | {len(view_layers)} view layers")
 
         if prefix == "VID":
-            # VID: one job per view layer, camera read from view layer override
             for vl in view_layers:
                 camera = get_vl_camera(vl, scene)
+                if not camera:
+                    self.report({'WARNING'}, f"No camera found for view layer '{vl.name}', skipping.")
+                    continue
                 info = build_output_info(blend_path, vl.name, camera)
                 jobs.append(self.create_job(
                     blend_folder, blend_file.name, scene,
@@ -146,7 +176,6 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
                 ))
 
         elif prefix in ("PNT", "TXT"):
-            # PNT / TXT: camera marker ranges, one job per view layer per range
             ranges = get_camera_ranges(scene)
             self.report({'INFO'}, f"{len(ranges)} camera ranges found")
             for vl in view_layers:
@@ -160,7 +189,6 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
                     ))
 
         else:
-            # Unknown prefix: fall back to scene camera, one job per view layer
             cam = scene.camera.name if scene.camera else ""
             for vl in view_layers:
                 info = build_output_info(blend_path, vl.name, cam)
@@ -170,6 +198,10 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
                     scene.frame_start, scene.frame_end,
                     info
                 ))
+
+        if not jobs:
+            self.report({'ERROR'}, "No jobs created. Check console for DEBUG info.")
+            return {'CANCELLED'}
 
         queue_file = Path(r"D:\B-Renderon\queues") / f"{QUEUE_NAME}.json"
         queue_file.parent.mkdir(parents=True, exist_ok=True)
@@ -183,9 +215,7 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
             for job in jobs:
                 lines.append(json.dumps(job, ensure_ascii=False) + "\n")
 
-            tmp_fd, tmp_path = tempfile.mkstemp(
-                dir=queue_file.parent, suffix=".tmp"
-            )
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=queue_file.parent, suffix=".tmp")
             try:
                 with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
                     f.writelines(lines)
