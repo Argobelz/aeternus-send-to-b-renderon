@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Send to B-Renderon",
     "author": "Aeternus",
-    "version": (1, 8, 0),
+    "version": (1, 9, 0),
     "blender": (5, 0, 0),
     "location": "Properties > Output > Send to B-Renderon",
-    "description": "Checkbox selection for VID view layers and PNT cameras (v1.8.0)",
+    "description": "Checkbox selection for VID view layers and PNT cameras (v1.9.0)",
     "category": "Render",
 }
 
@@ -107,7 +107,11 @@ def build_output_info(blend_path, view_layer, camera):
 
     base = r"J:\Aeternus\Render\Img Seq\Phase 1"
     ruta_output = f"{base}\\EPS{eps_num}\\SQ{sq}\\SH{sh_str}"
-    nombre_output = f"{cam_name_clean}_"
+
+    # Prepend view layer initial as file prefix (e.g. B_, C_, P_)
+    vl_initial = vl_name[0].upper() if vl_name else ""
+    file_prefix = f"{vl_initial}_" if vl_initial else ""
+    nombre_output = f"{file_prefix}{cam_name_clean}_"
 
     patron = {
         "aplicar_a": 2,
@@ -115,9 +119,9 @@ def build_output_info(blend_path, view_layer, camera):
             "J:\\Aeternus", "\\Render", "\\Img Seq", "\\Phase 1",
             f"\\EPS{eps_num}", f"\\SQ{sq}", f"\\SH{sh_str}"
         ],
-        "nombre": ["[CAMERA_NAME]", cam_name_clean, "_"],
+        "nombre": ["[CAMERA_NAME]", f"{file_prefix}{cam_name_clean}", "_"],
         "ruta_nodos": ruta_output,
-        "nombre_nodos": cam_name_clean,
+        "nombre_nodos": f"{file_prefix}{cam_name_clean}",
         "separador": "_",
     }
 
@@ -260,7 +264,7 @@ class SEND_TO_BRENDERON_OT_pnt_select_none(bpy.types.Operator):
 class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
     bl_idname = "send_to_brenderon.send"
     bl_label = "Send Selected Jobs"
-    bl_description = "Send checked jobs to B-Renderon queue (v1.8.0)"
+    bl_description = "Send checked jobs to B-Renderon queue (v1.9.0)"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -453,3 +457,4 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+
