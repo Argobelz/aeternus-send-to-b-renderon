@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Send to B-Renderon",
     "author": "Aeternus",
-    "version": (1, 9, 0),
+    "version": (1, 10, 0),
     "blender": (5, 0, 0),
     "location": "Properties > Output > Send to B-Renderon",
-    "description": "Checkbox selection for VID view layers and PNT cameras (v1.9.0)",
+    "description": "Checkbox selection for VID/ANM view layers and PNT cameras (v1.10.0)",
     "category": "Render",
 }
 
@@ -41,10 +41,14 @@ class PNTCameraItem(bpy.types.PropertyGroup):
 
 def get_blend_prefix(blend_path):
     stem = os.path.splitext(os.path.basename(blend_path))[0].upper()
-    for p in ("PNT", "TXT", "VID"):
+    for p in ("PNT", "TXT", "VID", "ANM"):
         if stem.startswith(p):
             return p
     return None
+
+
+# Prefixes that use the VID (per view layer / camera checklist) workflow.
+VID_LIKE_PREFIXES = ("VID", "ANM")
 
 
 def extract_eps_sq_sh(camera_name):
@@ -264,7 +268,7 @@ class SEND_TO_BRENDERON_OT_pnt_select_none(bpy.types.Operator):
 class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
     bl_idname = "send_to_brenderon.send"
     bl_label = "Send Selected Jobs"
-    bl_description = "Send checked jobs to B-Renderon queue (v1.9.0)"
+    bl_description = "Send checked jobs to B-Renderon queue (v1.10.0)"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -279,7 +283,7 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
         prefix = get_blend_prefix(blend_path)
         jobs = []
 
-        if prefix == "VID":
+        if prefix in VID_LIKE_PREFIXES:
             if not scene.btb_vid_layers:
                 self.report({'ERROR'}, "Click Refresh first to load view layers.")
                 return {'CANCELLED'}
@@ -375,7 +379,7 @@ class SEND_TO_BRENDERON_PT_panel(bpy.types.Panel):
         layout.separator()
 
         # ---- VID panel ----
-        if prefix == "VID":
+        if prefix in VID_LIKE_PREFIXES:
             row = layout.row()
             row.label(text="View Layers")
             row.operator("send_to_brenderon.refresh_vid", text="Refresh", icon='FILE_REFRESH')
