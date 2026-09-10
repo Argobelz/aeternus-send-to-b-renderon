@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Send to B-Renderon",
     "author": "Aeternus",
-    "version": (1, 11, 0),
+    "version": (1, 12, 0),
     "blender": (5, 0, 0),
     "location": "Properties > Output > Send to B-Renderon",
-    "description": "Checkbox selection for view layers/cameras, any filename prefix (v1.11.0)",
+    "description": "Marker-based camera ranges x view layers, any filename prefix (v1.12.0)",
     "category": "Render",
 }
 
@@ -22,13 +22,8 @@ QUEUE_NAME = "Default"
 # Scene property groups
 # ---------------------------------------------------------------------------
 
-class VIDViewLayerItem(bpy.types.PropertyGroup):
-    name: bpy.props.StringProperty()
-    camera: bpy.props.StringProperty()
-    enabled: bpy.props.BoolProperty(default=True)
-
-
-class PNTCameraItem(bpy.types.PropertyGroup):
+class BTBJobItem(bpy.types.PropertyGroup):
+    view_layer: bpy.props.StringProperty()
     camera: bpy.props.StringProperty()
     start: bpy.props.IntProperty()
     end: bpy.props.IntProperty()
@@ -84,6 +79,8 @@ def get_vl_camera(vl, scene):
 
 
 def get_camera_ranges(scene):
+    """Cameras bound to timeline markers, sorted by frame, each spanning
+    up to the next marker (or scene.frame_end for the last one)."""
     markers = [m for m in scene.timeline_markers if m.camera]
     markers.sort(key=lambda m: m.frame)
     ranges = []
@@ -106,7 +103,7 @@ def build_output_info(blend_path, view_layer, camera):
 
     print(f"[DEBUG] Blend: {blend_name} | VL: {vl_name} | Camera: {cam_name_clean} | EPS: {eps_num} | SQ: {sq} | SH: {sh_str}")
 
-    base = r"J:\Aeternus\Render\Img Seq\Phase 1"
+    base = r"J:\Aeternus\Render\Img Seq"
     ruta_output = f"{base}\\EPS{eps_num}\\SQ{sq}\\SH{sh_str}"
 
     # Prepend view layer initial as file prefix (e.g. B_, C_, P_)
@@ -117,7 +114,7 @@ def build_output_info(blend_path, view_layer, camera):
     patron = {
         "aplicar_a": 2,
         "ruta": [
-            "J:\\Aeternus", "\\Render", "\\Img Seq", "\\Phase 1",
+            "J:\\Aeternus", "\\Render", "\\Img Seq",
             f"\\EPS{eps_num}", f"\\SQ{sq}", f"\\SH{sh_str}"
         ],
         "nombre": ["[CAMERA_NAME]", f"{file_prefix}{cam_name_clean}", "_"],
@@ -184,40 +181,43 @@ def make_job(blend_folder, blend_name, scene, view_layer, camera, inicio, fin, i
 
 
 # ---------------------------------------------------------------------------
-# Operators — refresh lists
+# Operator — refresh job list
 # ---------------------------------------------------------------------------
 
-class SEND_TO_BRENDERON_OT_refresh_vid(bpy.types.Operator):
-    bl_idname = "send_to_brenderon.refresh_vid"
-    bl_label = "Refresh VID list"
+class SEND_TO_BRENDERON_OT_refresh(bpy.types.Operator):
+    bl_idname = "send_to_brenderon.refresh"
+    bl_label = "Refresh job list"
 
     def execute(self, context):
         scene = context.scene
-        scene.btb_vid_layers.clear()
-        for vl in scene.view_layers:
-            if not vl.use:
-                continue
-            camera = get_vl_camera(vl, scene)
-            item = scene.btb_vid_layers.add()
-            item.name = vl.name
-            item.camera = camera
-            item.enabled = True
-        return {'FINISHED'}
+        scene.btb_jobs.clear()
 
+        view_layers = [vl for vl in scene.view_layers if vl.use]
+        ranges = get_camera_ranges(scene)
 
-class SEND_TO_BRENDERON_OT_refresh_pnt(bpy.types.Operator):
-    bl_idname = "send_to_brenderon.refresh_pnt"
-    bl_label = "Refresh PNT list"
+        if ranges:
+            # Camera-bound timeline markers found: one row per marker range,
+            # crossed with every enabled view layer.
+            for vl in view_layers:
+                for r in ranges:
+                    item = scene.btb_jobs.add()
+                    item.view_layer = vl.name
+                    item.camera = r["camera"]
+                    item.start = r["start"]
+                    item.end = r["end"]
+                    item.enabled = True
+        else:
+            # No markers: fall back to one row per view layer using its
+            # assigned/detected camera across the full scene frame range.
+            for vl in view_layers:
+                camera = get_vl_camera(vl, scene)
+                item = scene.btb_jobs.add()
+                item.view_layer = vl.name
+                item.camera = camera
+                item.start = scene.frame_start
+                item.end = scene.frame_end
+                item.enabled = True
 
-    def execute(self, context):
-        scene = context.scene
-        scene.btb_pnt_cameras.clear()
-        for r in get_camera_ranges(scene):
-            item = scene.btb_pnt_cameras.add()
-            item.camera = r["camera"]
-            item.start = r["start"]
-            item.end = r["end"]
-            item.enabled = True
         return {'FINISHED'}
 
 
@@ -225,35 +225,19 @@ class SEND_TO_BRENDERON_OT_refresh_pnt(bpy.types.Operator):
 # Operators — select all / none
 # ---------------------------------------------------------------------------
 
-class SEND_TO_BRENDERON_OT_vid_select_all(bpy.types.Operator):
-    bl_idname = "send_to_brenderon.vid_select_all"
+class SEND_TO_BRENDERON_OT_select_all(bpy.types.Operator):
+    bl_idname = "send_to_brenderon.select_all"
     bl_label = "All"
     def execute(self, context):
-        for item in context.scene.btb_vid_layers:
+        for item in context.scene.btb_jobs:
             item.enabled = True
         return {'FINISHED'}
 
-class SEND_TO_BRENDERON_OT_vid_select_none(bpy.types.Operator):
-    bl_idname = "send_to_brenderon.vid_select_none"
+class SEND_TO_BRENDERON_OT_select_none(bpy.types.Operator):
+    bl_idname = "send_to_brenderon.select_none"
     bl_label = "None"
     def execute(self, context):
-        for item in context.scene.btb_vid_layers:
-            item.enabled = False
-        return {'FINISHED'}
-
-class SEND_TO_BRENDERON_OT_pnt_select_all(bpy.types.Operator):
-    bl_idname = "send_to_brenderon.pnt_select_all"
-    bl_label = "All"
-    def execute(self, context):
-        for item in context.scene.btb_pnt_cameras:
-            item.enabled = True
-        return {'FINISHED'}
-
-class SEND_TO_BRENDERON_OT_pnt_select_none(bpy.types.Operator):
-    bl_idname = "send_to_brenderon.pnt_select_none"
-    bl_label = "None"
-    def execute(self, context):
-        for item in context.scene.btb_pnt_cameras:
+        for item in context.scene.btb_jobs:
             item.enabled = False
         return {'FINISHED'}
 
@@ -265,7 +249,7 @@ class SEND_TO_BRENDERON_OT_pnt_select_none(bpy.types.Operator):
 class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
     bl_idname = "send_to_brenderon.send"
     bl_label = "Send Selected Jobs"
-    bl_description = "Send checked jobs to B-Renderon queue (v1.11.0)"
+    bl_description = "Send checked jobs to B-Renderon queue (v1.12.0)"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -279,22 +263,21 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
         blend_folder = str(blend_file.parent)
         jobs = []
 
-        # Every file uses the same per-view-layer / camera checklist workflow,
-        # regardless of filename prefix.
-        if not scene.btb_vid_layers:
-            self.report({'ERROR'}, "Click Refresh first to load view layers.")
+        if not scene.btb_jobs:
+            self.report({'ERROR'}, "Click Refresh first to load the job list.")
             return {'CANCELLED'}
-        for item in scene.btb_vid_layers:
+
+        for item in scene.btb_jobs:
             if not item.enabled:
                 continue
             if not item.camera:
-                self.report({'WARNING'}, f"No camera for '{item.name}', skipping.")
+                self.report({'WARNING'}, f"No camera for '{item.view_layer}', skipping.")
                 continue
-            info = build_output_info(blend_path, item.name, item.camera)
+            info = build_output_info(blend_path, item.view_layer, item.camera)
             jobs.append(make_job(
                 blend_folder, blend_file.name, scene,
-                item.name, item.camera,
-                scene.frame_start, scene.frame_end, info
+                item.view_layer, item.camera,
+                item.start, item.end, info
             ))
 
         if not jobs:
@@ -338,24 +321,23 @@ class SEND_TO_BRENDERON_PT_panel(bpy.types.Panel):
             layout.label(text=f"Prefix: {prefix}")
         layout.separator()
 
-        # Every file uses the same view-layer / camera checklist.
         row = layout.row()
-        row.label(text="View Layers")
-        row.operator("send_to_brenderon.refresh_vid", text="Refresh", icon='FILE_REFRESH')
+        row.label(text="Jobs (camera x frame range)")
+        row.operator("send_to_brenderon.refresh", text="Refresh", icon='FILE_REFRESH')
 
-        if scene.btb_vid_layers:
+        if scene.btb_jobs:
             row = layout.row(align=True)
-            row.operator("send_to_brenderon.vid_select_all", icon='CHECKBOX_HLT')
-            row.operator("send_to_brenderon.vid_select_none", icon='CHECKBOX_DEHLT')
+            row.operator("send_to_brenderon.select_all", icon='CHECKBOX_HLT')
+            row.operator("send_to_brenderon.select_none", icon='CHECKBOX_DEHLT')
 
             box = layout.box()
-            for item in scene.btb_vid_layers:
+            for item in scene.btb_jobs:
                 row = box.row()
                 row.prop(item, "enabled", text="")
-                row.label(text=item.name)
                 row.label(text=item.camera if item.camera else "No camera", icon='CAMERA_DATA')
+                row.label(text=f"f{item.start}\u2013{item.end}")
         else:
-            layout.label(text="Click Refresh to load view layers", icon='INFO')
+            layout.label(text="Click Refresh to load jobs", icon='INFO')
 
         layout.separator()
         layout.operator("send_to_brenderon.send", icon='RENDER_ANIMATION', text="Send Selected Jobs")
@@ -366,14 +348,10 @@ class SEND_TO_BRENDERON_PT_panel(bpy.types.Panel):
 # ---------------------------------------------------------------------------
 
 classes = (
-    VIDViewLayerItem,
-    PNTCameraItem,
-    SEND_TO_BRENDERON_OT_refresh_vid,
-    SEND_TO_BRENDERON_OT_refresh_pnt,
-    SEND_TO_BRENDERON_OT_vid_select_all,
-    SEND_TO_BRENDERON_OT_vid_select_none,
-    SEND_TO_BRENDERON_OT_pnt_select_all,
-    SEND_TO_BRENDERON_OT_pnt_select_none,
+    BTBJobItem,
+    SEND_TO_BRENDERON_OT_refresh,
+    SEND_TO_BRENDERON_OT_select_all,
+    SEND_TO_BRENDERON_OT_select_none,
     SEND_TO_BRENDERON_OT_send,
     SEND_TO_BRENDERON_PT_panel,
 )
@@ -382,17 +360,14 @@ classes = (
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.types.Scene.btb_vid_layers = bpy.props.CollectionProperty(type=VIDViewLayerItem)
-    bpy.types.Scene.btb_pnt_cameras = bpy.props.CollectionProperty(type=PNTCameraItem)
+    bpy.types.Scene.btb_jobs = bpy.props.CollectionProperty(type=BTBJobItem)
 
 
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-    del bpy.types.Scene.btb_vid_layers
-    del bpy.types.Scene.btb_pnt_cameras
+    del bpy.types.Scene.btb_jobs
 
 
 if __name__ == "__main__":
     register()
-
