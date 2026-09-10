@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Send to B-Renderon",
     "author": "Aeternus",
-    "version": (1, 10, 0),
+    "version": (1, 11, 0),
     "blender": (5, 0, 0),
     "location": "Properties > Output > Send to B-Renderon",
-    "description": "Checkbox selection for VID/ANM view layers and PNT cameras (v1.10.0)",
+    "description": "Checkbox selection for view layers/cameras, any filename prefix (v1.11.0)",
     "category": "Render",
 }
 
@@ -40,15 +40,12 @@ class PNTCameraItem(bpy.types.PropertyGroup):
 # ---------------------------------------------------------------------------
 
 def get_blend_prefix(blend_path):
+    """Kept only for display purposes. No longer gates behaviour."""
     stem = os.path.splitext(os.path.basename(blend_path))[0].upper()
     for p in ("PNT", "TXT", "VID", "ANM"):
         if stem.startswith(p):
             return p
     return None
-
-
-# Prefixes that use the VID (per view layer / camera checklist) workflow.
-VID_LIKE_PREFIXES = ("VID", "ANM")
 
 
 def extract_eps_sq_sh(camera_name):
@@ -268,7 +265,7 @@ class SEND_TO_BRENDERON_OT_pnt_select_none(bpy.types.Operator):
 class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
     bl_idname = "send_to_brenderon.send"
     bl_label = "Send Selected Jobs"
-    bl_description = "Send checked jobs to B-Renderon queue (v1.10.0)"
+    bl_description = "Send checked jobs to B-Renderon queue (v1.11.0)"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -280,63 +277,25 @@ class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
 
         blend_file = Path(blend_path)
         blend_folder = str(blend_file.parent)
-        prefix = get_blend_prefix(blend_path)
         jobs = []
 
-        if prefix in VID_LIKE_PREFIXES:
-            if not scene.btb_vid_layers:
-                self.report({'ERROR'}, "Click Refresh first to load view layers.")
-                return {'CANCELLED'}
-            for item in scene.btb_vid_layers:
-                if not item.enabled:
-                    continue
-                if not item.camera:
-                    self.report({'WARNING'}, f"No camera for '{item.name}', skipping.")
-                    continue
-                info = build_output_info(blend_path, item.name, item.camera)
-                jobs.append(make_job(
-                    blend_folder, blend_file.name, scene,
-                    item.name, item.camera,
-                    scene.frame_start, scene.frame_end, info
-                ))
-
-        elif prefix == "PNT":
-            if not scene.btb_pnt_cameras:
-                self.report({'ERROR'}, "Click Refresh first to load camera ranges.")
-                return {'CANCELLED'}
-            view_layers = [vl for vl in scene.view_layers if vl.use]
-            for item in scene.btb_pnt_cameras:
-                if not item.enabled:
-                    continue
-                for vl in view_layers:
-                    info = build_output_info(blend_path, vl.name, item.camera)
-                    jobs.append(make_job(
-                        blend_folder, blend_file.name, scene,
-                        vl.name, item.camera,
-                        item.start, item.end, info
-                    ))
-
-        elif prefix == "TXT":
-            ranges = get_camera_ranges(scene)
-            view_layers = [vl for vl in scene.view_layers if vl.use]
-            for r in ranges:
-                for vl in view_layers:
-                    info = build_output_info(blend_path, vl.name, r["camera"])
-                    jobs.append(make_job(
-                        blend_folder, blend_file.name, scene,
-                        vl.name, r["camera"],
-                        r["start"], r["end"], info
-                    ))
-
-        else:
-            cam = scene.camera.name if scene.camera else ""
-            for vl in (vl for vl in scene.view_layers if vl.use):
-                info = build_output_info(blend_path, vl.name, cam)
-                jobs.append(make_job(
-                    blend_folder, blend_file.name, scene,
-                    vl.name, cam,
-                    scene.frame_start, scene.frame_end, info
-                ))
+        # Every file uses the same per-view-layer / camera checklist workflow,
+        # regardless of filename prefix.
+        if not scene.btb_vid_layers:
+            self.report({'ERROR'}, "Click Refresh first to load view layers.")
+            return {'CANCELLED'}
+        for item in scene.btb_vid_layers:
+            if not item.enabled:
+                continue
+            if not item.camera:
+                self.report({'WARNING'}, f"No camera for '{item.name}', skipping.")
+                continue
+            info = build_output_info(blend_path, item.name, item.camera)
+            jobs.append(make_job(
+                blend_folder, blend_file.name, scene,
+                item.name, item.camera,
+                scene.frame_start, scene.frame_end, info
+            ))
 
         if not jobs:
             self.report({'ERROR'}, "No jobs selected. Check your checkboxes.")
@@ -375,53 +334,28 @@ class SEND_TO_BRENDERON_PT_panel(bpy.types.Panel):
         prefix = get_blend_prefix(blend_path)
 
         layout.label(text=f"File: {blend_file.name}", icon='FILE_BLEND')
-        layout.label(text=f"Prefix: {prefix or 'Unknown'}")
+        if prefix:
+            layout.label(text=f"Prefix: {prefix}")
         layout.separator()
 
-        # ---- VID panel ----
-        if prefix in VID_LIKE_PREFIXES:
-            row = layout.row()
-            row.label(text="View Layers")
-            row.operator("send_to_brenderon.refresh_vid", text="Refresh", icon='FILE_REFRESH')
+        # Every file uses the same view-layer / camera checklist.
+        row = layout.row()
+        row.label(text="View Layers")
+        row.operator("send_to_brenderon.refresh_vid", text="Refresh", icon='FILE_REFRESH')
 
-            if scene.btb_vid_layers:
-                # Select all / none row
-                row = layout.row(align=True)
-                row.operator("send_to_brenderon.vid_select_all", icon='CHECKBOX_HLT')
-                row.operator("send_to_brenderon.vid_select_none", icon='CHECKBOX_DEHLT')
+        if scene.btb_vid_layers:
+            row = layout.row(align=True)
+            row.operator("send_to_brenderon.vid_select_all", icon='CHECKBOX_HLT')
+            row.operator("send_to_brenderon.vid_select_none", icon='CHECKBOX_DEHLT')
 
-                box = layout.box()
-                for item in scene.btb_vid_layers:
-                    row = box.row()
-                    row.prop(item, "enabled", text="")
-                    row.label(text=item.name)
-                    row.label(text=item.camera if item.camera else "No camera", icon='CAMERA_DATA')
-            else:
-                layout.label(text="Click Refresh to load view layers", icon='INFO')
-
-        # ---- PNT panel ----
-        elif prefix == "PNT":
-            row = layout.row()
-            row.label(text="Camera Ranges")
-            row.operator("send_to_brenderon.refresh_pnt", text="Refresh", icon='FILE_REFRESH')
-
-            if scene.btb_pnt_cameras:
-                row = layout.row(align=True)
-                row.operator("send_to_brenderon.pnt_select_all", icon='CHECKBOX_HLT')
-                row.operator("send_to_brenderon.pnt_select_none", icon='CHECKBOX_DEHLT')
-
-                box = layout.box()
-                for item in scene.btb_pnt_cameras:
-                    row = box.row()
-                    row.prop(item, "enabled", text="")
-                    row.label(text=item.camera, icon='CAMERA_DATA')
-                    row.label(text=f"f{item.start}–{item.end}")
-            else:
-                layout.label(text="Click Refresh to load camera ranges", icon='INFO')
-
-        # ---- TXT / other — no selection UI needed ----
+            box = layout.box()
+            for item in scene.btb_vid_layers:
+                row = box.row()
+                row.prop(item, "enabled", text="")
+                row.label(text=item.name)
+                row.label(text=item.camera if item.camera else "No camera", icon='CAMERA_DATA')
         else:
-            layout.label(text="All camera ranges will be sent.", icon='INFO')
+            layout.label(text="Click Refresh to load view layers", icon='INFO')
 
         layout.separator()
         layout.operator("send_to_brenderon.send", icon='RENDER_ANIMATION', text="Send Selected Jobs")
