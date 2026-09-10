@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Send to B-Renderon",
     "author": "Aeternus",
-    "version": (1, 12, 0),
+    "version": (1, 12, 1),
     "blender": (5, 0, 0),
     "location": "Properties > Output > Send to B-Renderon",
-    "description": "Marker-based camera ranges x view layers, any filename prefix (v1.12.0)",
+    "description": "Marker-based camera ranges x view layers, with diagnostics (v1.12.1)",
     "category": "Render",
 }
 
@@ -194,6 +194,8 @@ class SEND_TO_BRENDERON_OT_refresh(bpy.types.Operator):
 
         view_layers = [vl for vl in scene.view_layers if vl.use]
         ranges = get_camera_ranges(scene)
+        total_markers = len(scene.timeline_markers)
+        camera_markers = len(ranges)
 
         if ranges:
             # Camera-bound timeline markers found: one row per marker range,
@@ -206,6 +208,11 @@ class SEND_TO_BRENDERON_OT_refresh(bpy.types.Operator):
                     item.start = r["start"]
                     item.end = r["end"]
                     item.enabled = True
+            self.report(
+                {'INFO'},
+                f"Found {camera_markers} camera-bound marker(s) x {len(view_layers)} "
+                f"view layer(s) = {len(scene.btb_jobs)} job(s)."
+            )
         else:
             # No markers: fall back to one row per view layer using its
             # assigned/detected camera across the full scene frame range.
@@ -217,6 +224,12 @@ class SEND_TO_BRENDERON_OT_refresh(bpy.types.Operator):
                 item.start = scene.frame_start
                 item.end = scene.frame_end
                 item.enabled = True
+            self.report(
+                {'WARNING'},
+                f"No camera-bound markers found ({total_markers} marker(s) total, "
+                f"none with a camera). Falling back to {len(view_layers)} "
+                f"view-layer row(s) with full scene range."
+            )
 
         return {'FINISHED'}
 
@@ -249,7 +262,7 @@ class SEND_TO_BRENDERON_OT_select_none(bpy.types.Operator):
 class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
     bl_idname = "send_to_brenderon.send"
     bl_label = "Send Selected Jobs"
-    bl_description = "Send checked jobs to B-Renderon queue (v1.12.0)"
+    bl_description = "Send checked jobs to B-Renderon queue (v1.12.1)"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -326,6 +339,7 @@ class SEND_TO_BRENDERON_PT_panel(bpy.types.Panel):
         row.operator("send_to_brenderon.refresh", text="Refresh", icon='FILE_REFRESH')
 
         if scene.btb_jobs:
+            layout.label(text=f"{len(scene.btb_jobs)} job(s) loaded", icon='INFO')
             row = layout.row(align=True)
             row.operator("send_to_brenderon.select_all", icon='CHECKBOX_HLT')
             row.operator("send_to_brenderon.select_none", icon='CHECKBOX_DEHLT')
