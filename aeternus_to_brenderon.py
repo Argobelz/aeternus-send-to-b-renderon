@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Send to B-Renderon",
     "author": "Aeternus",
-    "version": (1, 12, 1),
+    "version": (1, 13, 0),
     "blender": (5, 0, 0),
     "location": "Properties > Output > Send to B-Renderon",
-    "description": "Marker-based camera ranges x view layers, with diagnostics (v1.12.1)",
+    "description": "Marker-based camera ranges x view layers, with diagnostics (v1.13.0)",
     "category": "Render",
 }
 
@@ -100,16 +100,15 @@ def build_output_info(blend_path, view_layer, camera):
     eps_num, sq, sh_str = extract_eps_sq_sh(camera)
     vl_name = str(view_layer).strip()
     cam_name_clean = str(camera).strip()
+    # Shorten the EPS token in the filename: EPS05_... -> E05_...
+    cam_name_short = re.sub(r'^EPS(?=\d)', 'E', cam_name_clean, flags=re.IGNORECASE)
 
     print(f"[DEBUG] Blend: {blend_name} | VL: {vl_name} | Camera: {cam_name_clean} | EPS: {eps_num} | SQ: {sq} | SH: {sh_str}")
 
     base = r"J:\Aeternus\Render\Img Seq"
     ruta_output = f"{base}\\EPS{eps_num}\\SQ{sq}\\SH{sh_str}"
 
-    # Prepend view layer initial as file prefix (e.g. B_, C_, P_)
-    vl_initial = vl_name[0].upper() if vl_name else ""
-    file_prefix = f"{vl_initial}_" if vl_initial else ""
-    nombre_output = f"{file_prefix}{cam_name_clean}_"
+    nombre_output = f"{cam_name_short}_"
 
     patron = {
         "aplicar_a": 2,
@@ -117,9 +116,9 @@ def build_output_info(blend_path, view_layer, camera):
             "J:\\Aeternus", "\\Render", "\\Img Seq",
             f"\\EPS{eps_num}", f"\\SQ{sq}", f"\\SH{sh_str}"
         ],
-        "nombre": ["[CAMERA_NAME]", f"{file_prefix}{cam_name_clean}", "_"],
+        "nombre": ["[CAMERA_NAME]", cam_name_short, "_"],
         "ruta_nodos": ruta_output,
-        "nombre_nodos": f"{file_prefix}{cam_name_clean}",
+        "nombre_nodos": cam_name_short,
         "separador": "_",
     }
 
@@ -262,7 +261,7 @@ class SEND_TO_BRENDERON_OT_select_none(bpy.types.Operator):
 class SEND_TO_BRENDERON_OT_send(bpy.types.Operator):
     bl_idname = "send_to_brenderon.send"
     bl_label = "Send Selected Jobs"
-    bl_description = "Send checked jobs to B-Renderon queue (v1.12.1)"
+    bl_description = "Send checked jobs to B-Renderon queue (v1.13.0)"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
